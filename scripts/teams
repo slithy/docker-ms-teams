@@ -1,0 +1,11 @@
+#!/bin/sh
+
+SCRIPT=$(readlink -f "$0")
+USR_DIRECTORY=/usr
+
+TEAMS_PATH="$USR_DIRECTORY/share/teams/teams"
+TEAMS_LOGS="$HOME/.config/Microsoft/Microsoft Teams/logs"
+
+mkdir -p "$TEAMS_LOGS"
+
+"$TEAMS_PATH" "$@" > "$TEAMS_LOGS/teams-startup.log" 2>&1

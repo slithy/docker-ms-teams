@@ -1,0 +1,134 @@
+#!/bin/bash
+
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+MS_TEAMS_USER=msteams
+
+# do we need to use sudo to start docker containers?
+( id -Gn | grep -q docker ) || SUDO=sudo
+
+USER_UID=$(id -u)
+USER_GID=$(id -g)
+
+XSOCK=/tmp/.X11-unix
+XAUTH=/tmp/.docker.xauth
+
+DOWNLOAD_DIR=$(xdg-user-dir DOWNLOAD)
+if [ -z "${DOWNLOAD_DIR}" ]; then
+    DOWNLOAD_DIR="${HOME}/Downloads"
+fi;
+DOCUMENTS_DIR=$(xdg-user-dir DOCUMENTS)
+if [ -z "${DOCUMENTS_DIR}" ]; then
+    DOCUMENTS_DIR="${HOME}/Documents"
+fi;
+
+list_commands() {
+  echo ""
+  echo "Launch ms-teams using:"
+  echo "  msteams                  OR "
+  echo "  ms-teams-wrapper msteams"
+  echo ""
+  exit 1
+}
+
+cleanup_stopped_ms_teams_instances(){
+  echo "Cleaning up stopped ms-teams instances..."
+  for c in $(${SUDO} docker ps -a -q)
+  do
+    image="$(${SUDO} docker inspect -f {{.Config.Image}} ${c})"
+    if [ "${image}" == "slithy/ms-teams:latest" ]; then
+      running=$(${SUDO} docker inspect -f {{.State.Running}} ${c})
+      if [ "${running}" != "true" ]; then
+        ${SUDO} docker rm "${c}" >/dev/null
+      fi
+    fi
+  done
+}
+
+prepare_docker_env_parameters() {
+  ENV_VARS+=" --env=HOME=/home/${MS_TEAMS_USER}"
+  ENV_VARS+=" --env=USER_UID=${USER_UID}"
+  ENV_VARS+=" --env=USER_GID=${USER_GID}"
+  ENV_VARS+=" --env=DISPLAY=unix$DISPLAY"
+  ENV_VARS+=" --env=XAUTHORITY=${XAUTH}"
+  ENV_VARS+=" --env=TZ=$(date +%Z)"
+  ENV_VARS+=" --env=PULSE_SERVER=unix:/run/user/${USER_UID}/pulse/native"
+}
+
+prepare_docker_volume_parameters() {
+  touch ${XAUTH}
+  xauth nlist :0 | sed -e 's/^..../ffff/' | xauth -f ${XAUTH} nmerge -
+
+  if [[ -z "${MS_TEAMS_HOME}" ]]; then
+    MS_TEAMS_HOME=${HOME} # Default directory
+  else
+    DOWNLOAD_DIR=${DOWNLOAD_DIR/$HOME/$MS_TEAMS_HOME}
+    DOCUMENTS_DIR=${DOCUMENTS_DIR/$HOME/$MS_TEAMS_HOME}
+    mkdir -p {$DOWNLOAD_DIR,$DOCUMENTS_DIR}
+
+    mkdir -p ${MS_TEAMS_HOME}/.config/Microsoft/Microsoft\ Teams/logs
+    #mkdir -p ${MS_TEAMS_HOME}/.cache
+  fi
+
+  echo "Using MS_TEAMS_HOME: ${MS_TEAMS_HOME}"
+
+  VOLUMES+=" --volume=${MS_TEAMS_HOME}/.config/Microsoft:/home/${MS_TEAMS_USER}/.config/Microsoft"
+  VOLUMES+=" --volume=${MS_TEAMS_HOME}/.config/pulse:/home/${MS_TEAMS_USER}/.config/pulse"
+  VOLUMES+=" --volume=${DOWNLOAD_DIR}:/home/${MS_TEAMS_USER}/Downloads"
+  VOLUMES+=" --volume=${DOCUMENTS_DIR}:/home/${MS_TEAMS_USER}/Documents"
+  VOLUMES+=" --volume=${XSOCK}:${XSOCK}"
+  VOLUMES+=" --volume=${XAUTH}:${XAUTH}"
+  VOLUMES+=" --volume=/run/user/${USER_UID}/pulse:/run/user/${USER_UID}/pulse"
+}
+
+prepare_docker_device_parameters() {
+  # enumerate video devices for webcam support
+  VIDEO_DEVICES=
+  for device in /dev/video*
+  do
+    if [ -c $device ]; then
+      VIDEO_DEVICES="${VIDEO_DEVICES} --device $device:$device"
+    fi
+  done
+}
+
+prog=$(basename $0)
+exec=$(which $prog)
+
+if [[ ${prog} == "ms-teams-wrapper" ]]; then
+  case ${1} in
+    msteams)
+      prog=${1}
+      shift
+      ;;
+    *|help)
+      list_commands
+      exit 1
+      ;;
+  esac
+elif [[ -n ${exec} ]]; then
+  # launch host binary if it exists
+  exec ${exec} $@
+fi
+
+cleanup_stopped_ms_teams_instances
+prepare_docker_env_parameters
+prepare_docker_volume_parameters
+prepare_docker_device_parameters
+
+echo "Starting ${prog}..."
+echo "${SUDO} docker run -d \
+  ${ENV_VARS} \
+  ${VIDEO_DEVICES} \
+  --device /dev/dri \
+  ${VOLUMES} \
+  ${MS_TEAMS_EXTRA_DOCKER_ARGUMENTS} \
+  --name msteams \
+  slithy/ms-teams:latest /usr/bin/${prog} $@" 
+${SUDO} docker run -d \
+  ${ENV_VARS} \
+  ${VIDEO_DEVICES} \
+  --device /dev/dri \
+  ${VOLUMES} \
+  ${MS_TEAMS_EXTRA_DOCKER_ARGUMENTS} \
+  --name msteams \
+  slithy/ms-teams:latest /usr/bin/${prog} $@ >/dev/null
